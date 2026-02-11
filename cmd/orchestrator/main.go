@@ -14,9 +14,12 @@ import (
 
 	"github.com/docker/docker/client"
 
+	"warren/internal/admin"
+	"warren/internal/alerts"
 	"warren/internal/config"
 	"warren/internal/container"
 	"warren/internal/events"
+	"warren/internal/metrics"
 	"warren/internal/policy"
 	"warren/internal/proxy"
 	"warren/internal/services"
@@ -127,9 +130,82 @@ func main() {
 		logger.Info("agent configured", "name", name, "hostname", agent.Hostname, "extra_hostnames", len(agent.Hostnames), "policy", agent.Policy)
 	}
 
+	// Wire metrics into event system.
+	metrics.RegisterEventHandler(emitter)
+
+	// Wire webhook alerting.
+	if len(cfg.Webhooks) > 0 {
+		alerter := alerts.NewWebhookAlerter(cfg.Webhooks, logger)
+		alerter.RegisterEventHandler(emitter)
+		logger.Info("webhook alerting configured", "webhooks", len(cfg.Webhooks))
+	}
+
+	// Wire LRU eviction.
+	lruMgr := policy.NewLRUManager(p.Activity(), logger)
+	for name, pol := range policyByName {
+		if od, ok := pol.(*policy.OnDemand); ok {
+			agent := cfg.Agents[name]
+			lruMgr.Register(name, od, agent.Hostname)
+		}
+	}
+	if cfg.MaxReadyAgents > 0 {
+		emitter.OnEvent(func(ev events.Event) {
+			if ev.Type == events.AgentReady {
+				lruMgr.EvictIfNeeded(ctx, cfg.MaxReadyAgents)
+			}
+		})
+		logger.Info("LRU eviction enabled", "max_ready_agents", cfg.MaxReadyAgents)
+	}
+
+	// Start Docker event watcher.
+	watcher := container.NewWatcher(docker, func(serviceID, serviceName, action string) {
+		emitter.Emit(events.Event{
+			Type:  "docker." + action,
+			Agent: serviceName,
+			Fields: map[string]string{
+				"service_id": serviceID,
+				"action":     action,
+			},
+		})
+	}, logger)
+	go watcher.Watch(ctx)
+
 	// Start policy goroutines.
 	for _, pol := range policies {
 		go pol.Start(ctx)
+	}
+
+	// Admin server (separate port).
+	if cfg.AdminListen != "" {
+		agentInfos := make(map[string]admin.AgentInfo)
+		for name, agent := range cfg.Agents {
+			agentInfos[name] = admin.AgentInfo{
+				Name:     name,
+				Hostname: agent.Hostname,
+				Policy:   agent.Policy,
+				Backend:  agent.Backend,
+			}
+		}
+		adminSrv := admin.NewServer(agentInfos, policyByName, registry, emitter, serviceMgr, p.WSCounter().Total, logger)
+
+		// Mount metrics on admin handler.
+		adminMux := http.NewServeMux()
+		adminMux.Handle("/metrics", metrics.Handler())
+		adminMux.Handle("/", adminSrv.Handler())
+
+		go func() {
+			srv := &http.Server{Addr: cfg.AdminListen, Handler: adminMux}
+			go func() {
+				<-ctx.Done()
+				shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				srv.Shutdown(shutCtx)
+			}()
+			logger.Info("admin server starting", "addr", cfg.AdminListen)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("admin server failed", "error", err)
+			}
+		}()
 	}
 
 	// HTTP server.
