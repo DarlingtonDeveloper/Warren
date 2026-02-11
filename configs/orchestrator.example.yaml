@@ -22,3 +22,20 @@ agents:
       check_interval: 30s
       max_failures: 3
       max_restart_attempts: 10
+
+  mc:
+    hostname: "mc.darlington.dev"
+    backend: "http://localhost:8081"
+    policy: on-demand
+    container:
+      name: "dutybound-mc"
+      labels:
+        orchestrator.agent: mc
+    health:
+      url: "http://localhost:8081/api/health"
+      check_interval: 30s
+      startup_timeout: 60s
+      max_failures: 3
+      max_restart_attempts: 5
+    idle:
+      timeout: 30m

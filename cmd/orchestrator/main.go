@@ -77,6 +77,18 @@ func main() {
 				MaxFailures:        agent.Health.MaxFailures,
 				MaxRestartAttempts: agent.Health.MaxRestartAttempts,
 			}, logger)
+		case "on-demand":
+			pol = policy.NewOnDemand(mgr, policy.OnDemandConfig{
+				Agent:              name,
+				ContainerName:      agent.Container.Name,
+				HealthURL:          agent.Health.URL,
+				Hostname:           agent.Hostname,
+				CheckInterval:      agent.Health.CheckInterval,
+				StartupTimeout:     agent.Health.StartupTimeout,
+				IdleTimeout:        agent.Idle.Timeout,
+				MaxFailures:        agent.Health.MaxFailures,
+				MaxRestartAttempts: agent.Health.MaxRestartAttempts,
+			}, p.Activity(), p.WSCounter(), logger)
 		case "unmanaged":
 			pol = policy.NewUnmanaged()
 		default:

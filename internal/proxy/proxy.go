@@ -76,8 +76,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Wake endpoint — trigger on-demand start.
+	if r.URL.Path == "/api/wake" && r.Method == http.MethodPost {
+		backend.Policy.OnRequest()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+
 	backend.Policy.OnRequest()
 	p.activity.Touch(hostname)
+
+	// If the backend is sleeping or starting, return 503 instead of forwarding.
+	state := backend.Policy.State()
+	if state == "sleeping" || state == "starting" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(healthResponse{Status: state, Agent: backend.AgentName})
+		return
+	}
 
 	// WebSocket passthrough.
 	if IsWebSocket(r) {
@@ -100,7 +119,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, b *Backend) {
 	w.Header().Set("Cache-Control", "no-cache")
 
 	status := http.StatusOK
-	if state != "running" {
+	if state != "running" && state != "ready" {
 		status = http.StatusServiceUnavailable
 	}
 

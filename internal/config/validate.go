@@ -23,7 +23,7 @@ func validate(cfg *Config) error {
 		}
 
 		switch agent.Policy {
-		case "always-on", "unmanaged":
+		case "always-on", "unmanaged", "on-demand":
 			// valid
 		case "":
 			return fmt.Errorf("config: agent %q missing policy", name)
@@ -37,6 +37,18 @@ func validate(cfg *Config) error {
 			}
 			if agent.Health.URL == "" {
 				return fmt.Errorf("config: agent %q with always-on policy requires health.url", name)
+			}
+		}
+
+		if agent.Policy == "on-demand" {
+			if agent.Container.Name == "" {
+				return fmt.Errorf("config: agent %q with on-demand policy requires container.name", name)
+			}
+			if agent.Health.URL == "" {
+				return fmt.Errorf("config: agent %q with on-demand policy requires health.url", name)
+			}
+			if agent.Idle.Timeout <= 0 {
+				return fmt.Errorf("config: agent %q with on-demand policy requires idle.timeout > 0", name)
 			}
 		}
 
