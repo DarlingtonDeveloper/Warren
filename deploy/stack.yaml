@@ -1,0 +1,59 @@
+# Example Docker Swarm stack for Warren-managed agents.
+# Deploy with: docker stack deploy -c stack.yaml warren
+
+version: "3.8"
+
+# Encrypted overlay network for agent traffic.
+# Warren routes to agents over this network — no published ports needed.
+networks:
+  agents:
+    driver: overlay
+    driver_opts:
+      encrypted: "true"
+
+# External secrets — create before deploying:
+#   echo "secret-value" | docker secret create agent_api_key -
+secrets:
+  agent_api_key:
+    external: true
+
+services:
+  # Example always-on agent service.
+  # Swarm maintains exactly 1 replica and restarts on failure.
+  example-agent:
+    image: ghcr.io/your-org/your-agent:latest
+    networks:
+      - agents
+    # No published ports — Warren proxies traffic via the overlay network.
+
+    deploy:
+      # Single replica, always running.
+      replicas: 1
+
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 10
+        window: 120s
+
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+    # Docker-level health check. Warren also polls its own health endpoint.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    secrets:
+      - agent_api_key
+
+    environment:
+      - AGENT_NAME=example
