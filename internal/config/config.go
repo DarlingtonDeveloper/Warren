@@ -27,7 +27,8 @@ type Agent struct {
 }
 
 type IdleConfig struct {
-	Timeout time.Duration `yaml:"timeout"`
+	Timeout      time.Duration `yaml:"timeout"`
+	DrainTimeout time.Duration `yaml:"drain_timeout"`
 }
 
 type Container struct {
@@ -86,6 +87,9 @@ func applyDefaults(cfg *Config) {
 		}
 		if agent.Policy == "on-demand" && agent.Idle.Timeout == 0 {
 			agent.Idle.Timeout = 30 * time.Minute
+		}
+		if agent.Idle.DrainTimeout == 0 {
+			agent.Idle.DrainTimeout = 30 * time.Second
 		}
 	}
 }
