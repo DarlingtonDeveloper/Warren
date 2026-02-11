@@ -1,0 +1,17 @@
+[Unit]
+Description=Warren - OpenClaw Agent Orchestrator
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/warren --config /etc/warren/orchestrator.yaml
+Restart=on-failure
+RestartSec=5
+User=warren
+Group=warren
+LimitNOFILE=65535
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target
