@@ -97,7 +97,7 @@ flowchart LR
     end
     
     PROM["Prometheus"] -->|scrape| A7
-    SLACK["Slack"] <--|webhook| ORC["Event System"]
+    ORC["Event System"] -->|webhook| SLACK["Slack"]
 ```
 
 - **Agent listing** with real-time state
