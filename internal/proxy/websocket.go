@@ -79,6 +79,18 @@ func (w *WSCounter) Wait(timeout time.Duration) bool {
 	}
 }
 
+// activityWriter wraps a writer and touches the activity tracker on every write.
+type activityWriter struct {
+	w        io.Writer
+	hostname string
+	activity *ActivityTracker
+}
+
+func (aw *activityWriter) Write(p []byte) (int, error) {
+	aw.activity.Touch(aw.hostname)
+	return aw.w.Write(p)
+}
+
 func IsWebSocket(r *http.Request) bool {
 	return connectionHasUpgrade(r.Header.Get("Connection")) &&
 		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
@@ -149,19 +161,22 @@ func handleWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request
 		backConn.Close()
 	}()
 
-	// Bidirectional copy.
+	// Bidirectional copy with activity tracking on every frame.
+	clientActivity := &activityWriter{w: backConn, hostname: hostname, activity: activity}
+	backendActivity := &activityWriter{w: clientConn, hostname: hostname, activity: activity}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		io.Copy(backConn, clientBuf) //nolint:errcheck
+		io.Copy(clientActivity, clientBuf) //nolint:errcheck
 		backConn.Close()
 	}()
 
 	go func() {
 		defer wg.Done()
-		io.Copy(clientConn, backConn) //nolint:errcheck
+		io.Copy(backendActivity, backConn) //nolint:errcheck
 		clientConn.Close()
 	}()
 
