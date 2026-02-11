@@ -76,13 +76,11 @@ func main() {
 		var pol policy.Policy
 		switch agent.Policy {
 		case "always-on":
-			pol = policy.NewAlwaysOn(mgr, policy.AlwaysOnConfig{
-				Agent:              name,
-				ContainerName:      agent.Container.Name,
-				HealthURL:          agent.Health.URL,
-				CheckInterval:      agent.Health.CheckInterval,
-				MaxFailures:        agent.Health.MaxFailures,
-				MaxRestartAttempts: agent.Health.MaxRestartAttempts,
+			pol = policy.NewAlwaysOn(policy.AlwaysOnConfig{
+				Agent:         name,
+				HealthURL:     agent.Health.URL,
+				CheckInterval: agent.Health.CheckInterval,
+				MaxFailures:   agent.Health.MaxFailures,
 			}, logger)
 		case "on-demand":
 			pol = policy.NewOnDemand(mgr, policy.OnDemandConfig{
