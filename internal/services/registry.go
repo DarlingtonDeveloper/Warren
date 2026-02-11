@@ -4,18 +4,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"warren/internal/security"
 )
 
 // Service represents a dynamically registered route.
 type Service struct {
-	Hostname  string    `json:"hostname"`
-	Target    string    `json:"target"`
-	Agent     string    `json:"agent"`
-	CreatedAt time.Time `json:"created_at"`
+	Hostname  string               `json:"hostname"`
+	Target    string               `json:"target"`
+	Agent     string               `json:"agent"`
+	CreatedAt time.Time            `json:"created_at"`
+	TargetURL *url.URL             `json:"-"`
+	Proxy     *httputil.ReverseProxy `json:"-"`
 }
 
 // Registry holds ephemeral service routes registered by agents.
@@ -46,11 +51,25 @@ func (r *Registry) ReserveHostname(hostname string) {
 // Register adds an ephemeral route. Returns an error if the hostname is reserved
 // or the target URL is not allowed.
 func (r *Registry) Register(hostname, target, agent string) error {
+	// Validate hostname format (L3).
+	if err := security.ValidateHostname(hostname); err != nil {
+		r.logger.Warn("service registration rejected: invalid hostname", "hostname", hostname, "error", err)
+		return fmt.Errorf("invalid hostname: %w", err)
+	}
+
 	// Validate target URL to prevent SSRF.
 	if err := validateTarget(target); err != nil {
 		r.logger.Warn("service registration rejected: invalid target", "hostname", hostname, "target", target, "error", err)
 		return fmt.Errorf("invalid target: %w", err)
 	}
+
+	// Parse and cache the target URL and reverse proxy (L2).
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("invalid target URL: %w", err)
+	}
+	rp := httputil.NewSingleHostReverseProxy(targetURL)
+	rp.FlushInterval = -1
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -66,6 +85,8 @@ func (r *Registry) Register(hostname, target, agent string) error {
 		Target:    target,
 		Agent:     agent,
 		CreatedAt: time.Now(),
+		TargetURL: targetURL,
+		Proxy:     rp,
 	}
 	r.logger.Info("service registered", "hostname", hostname, "target", target, "agent", agent)
 	return nil
@@ -171,10 +192,18 @@ func (r *Registry) List() []Service {
 func (r *Registry) RegisterUnsafe(hostname, target, agent string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	targetURL, _ := url.Parse(target)
+	var rp *httputil.ReverseProxy
+	if targetURL != nil {
+		rp = httputil.NewSingleHostReverseProxy(targetURL)
+		rp.FlushInterval = -1
+	}
 	r.services[hostname] = &Service{
 		Hostname:  hostname,
 		Target:    target,
 		Agent:     agent,
 		CreatedAt: time.Now(),
+		TargetURL: targetURL,
+		Proxy:     rp,
 	}
 }

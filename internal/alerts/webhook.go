@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,11 +12,17 @@ import (
 	"warren/internal/events"
 )
 
+type webhookJob struct {
+	cfg config.WebhookConfig
+	ev  events.Event
+}
+
 // WebhookAlerter sends event notifications to configured webhook URLs.
 type WebhookAlerter struct {
 	configs []config.WebhookConfig
 	client  *http.Client
 	logger  *slog.Logger
+	jobs    chan webhookJob
 }
 
 // NewWebhookAlerter creates a new webhook alerter.
@@ -26,6 +33,24 @@ func NewWebhookAlerter(configs []config.WebhookConfig, logger *slog.Logger) *Web
 			Timeout: 10 * time.Second,
 		},
 		logger: logger.With("component", "webhook-alerter"),
+		jobs:   make(chan webhookJob, 100),
+	}
+}
+
+// Start launches the worker pool. Call this before registering event handlers.
+func (w *WebhookAlerter) Start(ctx context.Context) {
+	const numWorkers = 5
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case job := <-w.jobs:
+					w.send(job.cfg, job.ev)
+				}
+			}
+		}()
 	}
 }
 
@@ -34,7 +59,11 @@ func (w *WebhookAlerter) RegisterEventHandler(emitter *events.Emitter) {
 	emitter.OnEvent(func(ev events.Event) {
 		for _, cfg := range w.configs {
 			if w.matches(cfg, ev.Type) {
-				go w.send(cfg, ev)
+				select {
+				case w.jobs <- webhookJob{cfg: cfg, ev: ev}:
+				default:
+					w.logger.Warn("webhook job queue full, dropping event", "event", ev.Type, "url", cfg.URL)
+				}
 			}
 		}
 	})

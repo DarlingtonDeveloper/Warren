@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Listen      string            `yaml:"listen"`
 	AdminListen string            `yaml:"admin_listen"` // e.g. ":9090", empty = disabled
+	AdminToken  string            `yaml:"admin_token"`  // bearer token for admin API auth
 	Defaults    Defaults          `yaml:"defaults"`
 	Agents      map[string]*Agent `yaml:"agents"`
 	Webhooks    []WebhookConfig   `yaml:"webhooks"`
@@ -39,6 +40,7 @@ type Agent struct {
 type IdleConfig struct {
 	Timeout      time.Duration `yaml:"timeout"`
 	DrainTimeout time.Duration `yaml:"drain_timeout"`
+	WakeCooldown time.Duration `yaml:"wake_cooldown"`
 }
 
 type Container struct {
@@ -109,6 +111,9 @@ func applyDefaults(cfg *Config) {
 		}
 		if agent.Idle.DrainTimeout == 0 {
 			agent.Idle.DrainTimeout = 30 * time.Second
+		}
+		if agent.Policy == "on-demand" && agent.Idle.WakeCooldown == 0 {
+			agent.Idle.WakeCooldown = 30 * time.Second
 		}
 	}
 }

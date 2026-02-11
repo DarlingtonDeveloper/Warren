@@ -49,19 +49,20 @@ type AgentManager interface {
 
 // Server is the admin API server.
 type Server struct {
-	mu       sync.RWMutex
-	agents   map[string]AgentInfo
-	policies map[string]policy.Policy
-	cancels  map[string]context.CancelFunc
-	registry *services.Registry
-	events   *events.Emitter
-	manager  *container.Manager
-	prxy     *proxy.Proxy
-	cfg      *config.Config
-	cfgPath  string
-	logger   *slog.Logger
-	startAt  time.Time
-	wsTotal  func() int64
+	mu        sync.RWMutex
+	agents    map[string]AgentInfo
+	policies  map[string]policy.Policy
+	cancels   map[string]context.CancelFunc
+	registry  *services.Registry
+	events    *events.Emitter
+	manager   *container.Manager
+	prxy      *proxy.Proxy
+	cfg       *config.Config
+	cfgPath   string
+	authToken string
+	logger    *slog.Logger
+	startAt   time.Time
+	wsTotal   func() int64
 }
 
 // NewServer creates a new admin server.
@@ -78,19 +79,24 @@ func NewServer(
 	wsTotal func() int64,
 	logger *slog.Logger,
 ) *Server {
+	l := logger.With("component", "admin")
+	if cfg.AdminToken == "" {
+		l.Warn("admin API has no auth token configured — all requests will be allowed")
+	}
 	return &Server{
-		agents:   agents,
-		policies: policies,
-		cancels:  cancels,
-		registry: registry,
-		events:   emitter,
-		manager:  manager,
-		prxy:     prxy,
-		cfg:      cfg,
-		cfgPath:  cfgPath,
-		wsTotal:  wsTotal,
-		logger:   logger.With("component", "admin"),
-		startAt:  time.Now(),
+		agents:    agents,
+		policies:  policies,
+		cancels:   cancels,
+		registry:  registry,
+		events:    emitter,
+		manager:   manager,
+		prxy:      prxy,
+		cfg:       cfg,
+		cfgPath:   cfgPath,
+		authToken: cfg.AdminToken,
+		wsTotal:   wsTotal,
+		logger:    l,
+		startAt:   time.Now(),
 	}
 }
 
@@ -102,7 +108,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/services", s.handleServices)
 	mux.HandleFunc("/admin/health", s.handleHealth)
 	mux.HandleFunc("/admin/events", s.handleSSE)
-	return mux
+	return s.authMiddleware(mux)
+}
+
+// authMiddleware checks for a valid Bearer token if one is configured.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken != "" {
+			auth := r.Header.Get("Authorization")
+			if auth != "Bearer "+s.authToken {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +238,7 @@ func (s *Server) addAgent(w http.ResponseWriter, r *http.Request) {
 			CheckInterval:      30 * time.Second,
 			StartupTimeout:     60 * time.Second,
 			IdleTimeout:        idleTimeout,
+			WakeCooldown:       30 * time.Second,
 			MaxFailures:        3,
 			MaxRestartAttempts: 10,
 		}, s.prxy.Activity(), s.prxy.WSCounter(), s.events, s.logger)

@@ -37,7 +37,12 @@ services:
         constraints:
           - node.role == manager  # needs access to Swarm API
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Docker socket needs write access for Swarm service scaling (docker service update).
+      # Read-only mount would prevent Warren from starting/stopping agent containers.
+      # Security: access is limited to the overlay network; admin port is not publicly exposed.
+      # Consider using a Docker socket proxy (e.g., tecnativa/docker-socket-proxy) for
+      # fine-grained API access control in production.
+      - /var/run/docker.sock:/var/run/docker.sock
 
   # Example always-on agent service.
   # Swarm maintains exactly 1 replica and restarts on failure.

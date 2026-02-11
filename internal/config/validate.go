@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"net/url"
+
+	"warren/internal/security"
 )
 
 func validate(cfg *Config) error {
@@ -52,16 +54,33 @@ func validate(cfg *Config) error {
 			}
 		}
 
-		// Check all hostnames (primary + additional) for duplicates.
+		// Validate and check all hostnames (primary + additional) for duplicates.
 		allHostnames := append([]string{agent.Hostname}, agent.Hostnames...)
 		for _, h := range allHostnames {
 			if h == "" {
 				continue
 			}
+			if err := security.ValidateHostname(h); err != nil {
+				return fmt.Errorf("config: agent %q hostname %q: %w", name, h, err)
+			}
 			if prev, ok := hostnames[h]; ok {
 				return fmt.Errorf("config: duplicate hostname %q (agents %q and %q)", h, prev, name)
 			}
 			hostnames[h] = name
+		}
+
+		// Validate health check URLs (M3: scheme validation, private IPs allowed).
+		if agent.Health.URL != "" {
+			if err := security.ValidateHealthURL(agent.Health.URL); err != nil {
+				return fmt.Errorf("config: agent %q invalid health URL: %w", name, err)
+			}
+		}
+	}
+
+	// Validate webhook URLs (M2: SSRF protection).
+	for i, wh := range cfg.Webhooks {
+		if err := security.ValidateWebhookURL(wh.URL); err != nil {
+			return fmt.Errorf("config: webhook[%d] invalid URL %q: %w", i, wh.URL, err)
 		}
 	}
 

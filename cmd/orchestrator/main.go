@@ -105,6 +105,7 @@ func main() {
 	// Wire webhook alerting.
 	if len(cfg.Webhooks) > 0 {
 		alerter := alerts.NewWebhookAlerter(cfg.Webhooks, logger)
+		alerter.Start(ctx)
 		alerter.RegisterEventHandler(emitter)
 		logger.Info("webhook alerting configured", "webhooks", len(cfg.Webhooks))
 	}
@@ -188,7 +189,11 @@ func main() {
 		Addr:         cfg.Listen,
 		Handler:      p,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 0, // no timeout for streaming/SSE/WS
+		// WriteTimeout is intentionally 0 to support SSE, WebSocket, and streaming
+		// responses. Per-request timeouts are enforced at the handler level.
+		// A slow client can hold a goroutine indefinitely, but this is acceptable
+		// given deployment behind Cloudflare Tunnel which enforces its own timeouts.
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -274,6 +279,7 @@ func createPolicy(name string, agent *config.Agent, serviceMgr *container.Manage
 			CheckInterval:      agent.Health.CheckInterval,
 			StartupTimeout:     agent.Health.StartupTimeout,
 			IdleTimeout:        agent.Idle.Timeout,
+			WakeCooldown:       agent.Idle.WakeCooldown,
 			MaxFailures:        agent.Health.MaxFailures,
 			MaxRestartAttempts: agent.Health.MaxRestartAttempts,
 		}, p.Activity(), p.WSCounter(), emitter, logger)

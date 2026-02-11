@@ -74,12 +74,16 @@
 - **Exploitable behind Cloudflare Tunnel:** **NO** — admin port (`:9090`) is separate and not exposed through the tunnel. Only exploitable if the admin port is accidentally exposed or from within the Docker network.
 - **Recommended Fix:** Add basic auth or bearer token authentication to the admin API. Document that the admin port must never be publicly exposed.
 
+**Fix applied:** Added bearer token authentication middleware to admin API. Configure `admin_token` in config; if not set, a warning is logged but access is allowed (backward compatible).
+
 ### M2: Webhook URLs Not Validated (SSRF via Config)
 
 - **File:** `internal/alerts/webhook.go`, line 57 (`http.NewRequest` with `cfg.URL`)
 - **Description:** Webhook URLs from config are not validated. A malicious config could set webhook URLs to internal services, causing the orchestrator to make requests to internal endpoints on every event.
 - **Exploitable behind Cloudflare Tunnel:** **NO** — requires config file access.
 - **Recommended Fix:** Validate webhook URLs at config load time; reject private/internal IP ranges.
+
+**Fix applied:** Webhook URLs are validated at config load time via `security.ValidateWebhookURL()`, rejecting private/internal IPs and non-http(s) schemes.
 
 ### M3: Health Check URLs Not Validated (SSRF via Config)
 
@@ -88,6 +92,8 @@
 - **Exploitable behind Cloudflare Tunnel:** **NO** — requires config file access.
 - **Recommended Fix:** Validate health URLs at config load time.
 
+**Fix applied:** Health URLs are validated at config load time via `security.ValidateHealthURL()`, ensuring http/https scheme only. Private IPs are allowed since health checks target containers.
+
 ### M4: No Rate Limiting on Wake/Sleep Cycling
 
 - **File:** `internal/policy/on_demand.go` (Wake/Sleep methods); `internal/proxy/proxy.go` (OnRequest triggers wake)
@@ -95,11 +101,15 @@
 - **Exploitable behind Cloudflare Tunnel:** **YES** — rapid requests through the tunnel can trigger wake cycling.
 - **Recommended Fix:** Add a cooldown period between wake attempts (e.g., don't re-wake within 30s of last sleep).
 
+**Fix applied:** Added `wake_cooldown` config (default 30s). `OnRequest()` ignores wake signals during cooldown period after last sleep.
+
 ### M5: Goroutine Leak in Webhook Alerter
 
 - **File:** `internal/alerts/webhook.go`, line 42 (`go w.send(cfg, ev)`)
 - **Description:** Each webhook send spawns an unbounded goroutine. A flood of events combined with slow/unresponsive webhook targets can lead to goroutine exhaustion.
 - **Recommended Fix:** Use a bounded worker pool or buffered channel for webhook sends.
+
+**Fix applied:** Replaced unbounded goroutines with a buffered channel (capacity 100) and 5-worker pool. Events are dropped with a warning if the queue is full.
 
 ---
 
@@ -111,11 +121,15 @@
 - **Description:** The proxy error handler logs the backend address and error details. While these go to structured logs (not HTTP responses), log aggregation systems could expose internal service names and ports.
 - **Recommended Fix:** Ensure log outputs are not accessible to external users. The HTTP error response correctly returns only "bad gateway" — this is fine.
 
+**Fix applied:** No fix needed — error details are already log-only, not in HTTP responses.
+
 ### L2: Dynamic Service Target URL Parsed Per-Request
 
 - **File:** `internal/proxy/proxy.go`, line 79 (`url.Parse(svc.Target)`)
 - **Description:** Each request to a dynamic service re-parses the target URL and creates a new `ReverseProxy`. This is inefficient and means malformed URLs stored in the registry cause per-request error logging.
 - **Recommended Fix:** Validate and parse the URL at registration time; cache the `ReverseProxy` instance.
+
+**Fix applied:** Target URL is parsed and `ReverseProxy` is cached at registration time in the Service struct. Proxy uses cached instances instead of creating per-request.
 
 ### L3: No Hostname Format Validation
 
@@ -123,11 +137,15 @@
 - **Description:** Hostnames are not validated for format (e.g., could contain spaces, newlines, or other special characters). While `stripPort` handles the port, unusual characters could cause unexpected routing behavior.
 - **Recommended Fix:** Validate hostnames against RFC 952/1123 at config load time and at dynamic registration time.
 
+**Fix applied:** Added `security.ValidateHostname()` (RFC 1123). Called in config validation and dynamic service registration.
+
 ### L4: WriteTimeout Set to 0 on Public Server
 
 - **File:** `cmd/orchestrator/main.go`, line 155 (`WriteTimeout: 0`)
 - **Description:** `WriteTimeout: 0` disables write timeout, necessary for SSE/WS but means a slow client can hold a regular HTTP connection's goroutine indefinitely.
 - **Recommended Fix:** Consider using `http.ResponseController` per-request to extend timeouts only for streaming connections, or accept the risk with documentation.
+
+**Fix applied:** Risk accepted with documentation. Code comment added explaining why WriteTimeout is 0 and noting Cloudflare Tunnel enforces its own timeouts.
 
 ---
 
@@ -138,6 +156,8 @@
 - **File:** `deploy/stack.yaml`, line 44 (`/var/run/docker.sock:/var/run/docker.sock:ro`)
 - **Description:** The stack config mounts the Docker socket as read-only (`:ro`), but `ServiceUpdate` (used for scaling) requires write access. This will fail at runtime. The `:ro` mount provides a false sense of security — if write access is needed, it must be removed, and other mitigations should be used.
 - **Recommended Fix:** Remove `:ro` (since write is needed for scaling) and document the security implications. Consider using a Docker socket proxy like `tecnativa/docker-socket-proxy` to limit API access to only the endpoints needed.
+
+**Fix applied:** Removed `:ro` from Docker socket mount; added comments explaining why write access is needed and recommending socket proxy for production.
 
 ### I2: Prometheus Metrics Expose Agent Names
 

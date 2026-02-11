@@ -141,27 +141,25 @@ func (p *Proxy) serveBackend(w http.ResponseWriter, r *http.Request, hostname st
 }
 
 func (p *Proxy) serveDynamicService(w http.ResponseWriter, r *http.Request, hostname string, svc *services.Service) {
-	target, err := url.Parse(svc.Target)
-	if err != nil {
-		p.logger.Error("invalid dynamic service target", "hostname", hostname, "target", svc.Target, "error", err)
+	p.activity.Touch(hostname)
+
+	// Use cached TargetURL and Proxy from registration (L2).
+	if svc.TargetURL == nil || svc.Proxy == nil {
+		p.logger.Error("dynamic service missing cached proxy", "hostname", hostname)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 
-	p.activity.Touch(hostname)
-
 	if IsWebSocket(r) {
-		HandleWebSocket(w, r, target, hostname, p.ws, p.activity, p.logger)
+		HandleWebSocket(w, r, svc.TargetURL, hostname, p.ws, p.activity, p.logger)
 		return
 	}
 
-	rp := httputil.NewSingleHostReverseProxy(target)
-	rp.FlushInterval = -1
-	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+	svc.Proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		p.logger.Error("dynamic service proxy error", "hostname", hostname, "error", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 	}
-	rp.ServeHTTP(w, r)
+	svc.Proxy.ServeHTTP(w, r)
 }
 
 // HandleServiceAPI routes /api/services requests. Intended for admin mux only.

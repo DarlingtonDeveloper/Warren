@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -26,10 +27,14 @@ func TestWebhookFiresOnMatchingEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	emitter := events.NewEmitter(quietLogger())
 	alerter := NewWebhookAlerter([]config.WebhookConfig{
 		{URL: srv.URL, Events: []string{events.AgentReady}},
 	}, quietLogger())
+	alerter.Start(ctx)
 	alerter.RegisterEventHandler(emitter)
 
 	emitter.Emit(events.Event{Type: events.AgentReady, Agent: "test"})
@@ -48,10 +53,14 @@ func TestWebhookDoesNotFireOnNonMatchingEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	emitter := events.NewEmitter(quietLogger())
 	alerter := NewWebhookAlerter([]config.WebhookConfig{
 		{URL: srv.URL, Events: []string{events.AgentReady}},
 	}, quietLogger())
+	alerter.Start(ctx)
 	alerter.RegisterEventHandler(emitter)
 
 	emitter.Emit(events.Event{Type: events.AgentSleep, Agent: "test"})
@@ -72,10 +81,14 @@ func TestWebhookSendsCorrectJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	emitter := events.NewEmitter(quietLogger())
 	alerter := NewWebhookAlerter([]config.WebhookConfig{
 		{URL: srv.URL},
 	}, quietLogger())
+	alerter.Start(ctx)
 	alerter.RegisterEventHandler(emitter)
 
 	emitter.Emit(events.Event{Type: events.AgentWake, Agent: "my-agent"})
@@ -101,10 +114,14 @@ func TestWebhookCustomHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	emitter := events.NewEmitter(quietLogger())
 	alerter := NewWebhookAlerter([]config.WebhookConfig{
 		{URL: srv.URL, Headers: map[string]string{"Authorization": "Bearer secret"}},
 	}, quietLogger())
+	alerter.Start(ctx)
 	alerter.RegisterEventHandler(emitter)
 
 	emitter.Emit(events.Event{Type: events.AgentReady, Agent: "test"})

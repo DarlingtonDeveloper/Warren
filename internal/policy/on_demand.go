@@ -30,24 +30,26 @@ type OnDemandConfig struct {
 	CheckInterval      time.Duration
 	StartupTimeout     time.Duration
 	IdleTimeout        time.Duration
+	WakeCooldown       time.Duration
 	MaxFailures        int
 	MaxRestartAttempts int
 }
 
 type OnDemand struct {
 	agent, containerName, healthURL, hostname string
-	startupTimeout, idleTimeout, checkInterval time.Duration
-	maxFailures, maxRestartAttempts             int
+	startupTimeout, idleTimeout, checkInterval, wakeCooldown time.Duration
+	maxFailures, maxRestartAttempts                           int
 
 	manager  container.Lifecycle
 	activity ActivitySource
 	ws       WSSource
 	emitter  *events.Emitter
 
-	mu           sync.RWMutex
-	state        string        // "sleeping", "starting", "ready", "degraded"
-	initialState *bool         // set by SetInitialState before Start
-	wakeCh       chan struct{} // buffered(1), signals wake request
+	mu            sync.RWMutex
+	state         string        // "sleeping", "starting", "ready", "degraded"
+	initialState  *bool         // set by SetInitialState before Start
+	lastSleepTime time.Time     // tracks when agent last went to sleep
+	wakeCh        chan struct{} // buffered(1), signals wake request
 
 	logger *slog.Logger
 }
@@ -61,6 +63,7 @@ func NewOnDemand(mgr container.Lifecycle, cfg OnDemandConfig, activity ActivityS
 		startupTimeout:     cfg.StartupTimeout,
 		idleTimeout:        cfg.IdleTimeout,
 		checkInterval:      cfg.CheckInterval,
+		wakeCooldown:       cfg.WakeCooldown,
 		maxFailures:        cfg.MaxFailures,
 		maxRestartAttempts: cfg.MaxRestartAttempts,
 		manager:            mgr,
@@ -137,6 +140,17 @@ func (o *OnDemand) State() string {
 
 func (o *OnDemand) OnRequest() {
 	if o.State() == "sleeping" {
+		// Enforce wake cooldown to prevent rapid wake/sleep cycling.
+		o.mu.RLock()
+		lastSleep := o.lastSleepTime
+		cooldown := o.wakeCooldown
+		o.mu.RUnlock()
+
+		if cooldown > 0 && !lastSleep.IsZero() && time.Since(lastSleep) < cooldown {
+			o.logger.Info("wake request ignored: cooldown active", "remaining", cooldown-time.Since(lastSleep))
+			return
+		}
+
 		select {
 		case o.wakeCh <- struct{}{}:
 		default: // already waking
@@ -174,6 +188,9 @@ func (o *OnDemand) setState(s string) {
 	o.mu.Lock()
 	prev := o.state
 	o.state = s
+	if s == "sleeping" {
+		o.lastSleepTime = time.Now()
+	}
 	o.mu.Unlock()
 
 	if prev != s {
