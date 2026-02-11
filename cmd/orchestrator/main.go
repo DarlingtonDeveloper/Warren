@@ -14,10 +14,10 @@ import (
 
 	"github.com/docker/docker/client"
 
-	"openclaw-orchestrator/internal/config"
-	"openclaw-orchestrator/internal/container"
-	"openclaw-orchestrator/internal/policy"
-	"openclaw-orchestrator/internal/proxy"
+	"warren/internal/config"
+	"warren/internal/container"
+	"warren/internal/policy"
+	"warren/internal/proxy"
 )
 
 func main() {
