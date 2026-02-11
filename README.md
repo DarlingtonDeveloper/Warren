@@ -183,6 +183,7 @@ Create `orchestrator.yaml` (see [configs/orchestrator.example.yaml](configs/orch
 ```yaml
 listen: ":8080"
 admin_listen: ":9090"
+admin_token: "your-secret-token"  # optional: protects the admin API
 max_ready_agents: 5
 
 defaults:
@@ -392,6 +393,7 @@ For the full CLI reference with all flags and examples, see [docs/cli.md](docs/c
 |---|---|---|---|
 | `listen` | string | `:8080` | Address for the main proxy |
 | `admin_listen` | string | *(disabled)* | Address for the admin API and metrics (e.g. `:9090`) |
+| `admin_token` | string | *(none)* | Bearer token for admin API authentication. If empty, all requests are allowed |
 | `max_ready_agents` | int | `0` (unlimited) | Max on-demand agents awake at once; triggers LRU eviction |
 | `defaults.health_check_interval` | duration | `30s` | Default health check interval for all agents |
 | `webhooks` | list | `[]` | Webhook endpoints for event alerting |
@@ -416,6 +418,19 @@ For the full CLI reference with all flags and examples, see [docs/cli.md](docs/c
 | `health.max_restart_attempts` | int | `10` | Max restarts before marking degraded |
 | `idle.timeout` | duration | `30m` | Idle time before sleeping (on-demand only) |
 | `idle.drain_timeout` | duration | `30s` | Max time to wait for WebSocket drain on sleep/shutdown |
+| `idle.wake_cooldown` | duration | `30s` | Minimum time between sleep and next wake (prevents rapid cycling) |
+
+## Security
+
+Warren includes several security hardening features:
+
+- **Admin API authentication** — Set `admin_token` to require a Bearer token for all admin API requests. Without it, the admin API is open (suitable for localhost-only binding).
+- **SSRF protection** — Webhook URLs are validated to reject private IPs (RFC 1918), loopback, and link-local addresses. Cloud metadata endpoints (169.254.169.254) are blocked.
+- **Hostname validation** — All hostnames (configured and dynamically registered) are validated against RFC 1123. Invalid characters, overlong labels, and empty labels are rejected.
+- **URL scheme enforcement** — Only `http` and `https` schemes are allowed for webhooks, health checks, and service targets. `file://`, `ftp://`, and unix socket paths are blocked.
+- **Bounded webhook workers** — Webhook delivery uses a fixed worker pool (5 workers, 100-event buffer). Events are dropped rather than blocking the event system if the queue is full.
+- **Wake cooldown** — On-demand agents have a configurable `wake_cooldown` (default 30s) to prevent rapid wake/sleep cycling from thundering-herd request patterns.
+- **Service target validation** — Dynamic service registrations validate target URLs, blocking metadata endpoints, docker sockets, and dangerous schemes.
 
 ## Service Registration API
 
