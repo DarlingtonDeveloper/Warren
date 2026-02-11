@@ -1,18 +1,53 @@
+# Warren Orchestrator Configuration
+# All duration values accept Go duration strings: 30s, 5m, 1h, etc.
+
+# Main proxy listen address.
 listen: ":8080"
 
+# Admin API listen address (separate port).
+# Exposes /admin/*, /metrics endpoints.
+# Leave empty to disable.
+admin_listen: ":9090"
+
+# Maximum number of on-demand agents that can be awake simultaneously.
+# When exceeded, the least-recently-used on-demand agent is put to sleep.
+# 0 = unlimited (no eviction).
+max_ready_agents: 5
+
+# Default settings applied to all agents (can be overridden per-agent).
 defaults:
   health_check_interval: 30s
 
+# Webhook endpoints for event alerting (Slack-compatible JSON payloads).
+# Each webhook can filter by event type.
+# Event types: agent.ready, agent.starting, agent.sleep, agent.wake,
+#              agent.degraded, agent.health_failed, restart.exhausted
+webhooks:
+  - url: "https://your-slack-webhook-url-here"
+    # Optional: only send specific events (omit to receive all).
+    events:
+      - "agent.degraded"
+      - "restart.exhausted"
+  # - url: "https://my-alerting-service.com/webhook"
+  #   headers:
+  #     Authorization: "Bearer my-token"
+  #   events:
+  #     - "agent.sleep"
+  #     - "agent.wake"
+
 agents:
+  # Unmanaged agent — pure passthrough, no lifecycle management.
   root:
     hostname: "kai.darlington.dev"
-    # Swarm DNS: http://tasks.<stack>_<service>:<port>
     backend: "http://tasks.warren_root-agent:18789"
     policy: unmanaged
 
+  # Always-on agent — Swarm keeps it running, orchestrator monitors health.
   friend:
     hostname: "friend.darlington.dev"
-    # Swarm DNS routes to the running task on the overlay network.
+    # Additional hostnames that route to the same agent.
+    # hostnames:
+    #   - "alias.darlington.dev"
     backend: "http://tasks.warren_friend-agent:18790"
     policy: always-on
     container:
@@ -25,6 +60,7 @@ agents:
       max_failures: 3
       max_restart_attempts: 10
 
+  # On-demand agent — sleeps at 0 replicas, wakes on first request.
   mc:
     hostname: "mc.darlington.dev"
     backend: "http://tasks.warren_mc-agent:8081"
@@ -36,9 +72,9 @@ agents:
     health:
       url: "http://tasks.warren_mc-agent:8081/api/health"
       check_interval: 30s
-      startup_timeout: 60s
-      max_failures: 3
-      max_restart_attempts: 5
+      startup_timeout: 60s       # Max time to wait for healthy after wake
+      max_failures: 3            # Consecutive failures before restart
+      max_restart_attempts: 5    # Max restarts before marking degraded
     idle:
-      timeout: 30m
-      drain_timeout: 30s
+      timeout: 30m               # Sleep after 30 minutes of no activity
+      drain_timeout: 30s         # Max wait for WebSocket drain on sleep/shutdown

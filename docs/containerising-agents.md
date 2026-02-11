@@ -403,6 +403,59 @@ docker service ls
 docker service ps openclaw_my-agent
 ```
 
+## Service Registration
+
+Agents can register dynamic hostnames at runtime by calling the orchestrator's service registration API. This lets agents expose sub-services (preview servers, dev tools, web UIs) without pre-configuring them in the orchestrator YAML.
+
+```bash
+# From inside the container, register a hostname
+curl -X POST http://tasks.warren_orchestrator:8080/api/services \
+  -H 'Content-Type: application/json' \
+  -d '{"hostname": "preview.yourdomain.com", "target": ":3000"}'
+```
+
+**Key points:**
+
+- The orchestrator is reachable from inside containers via Swarm DNS on the overlay network — no host ports needed
+- Dynamic routes are ephemeral: they're automatically purged when the parent agent sleeps
+- Agents can register multiple hostnames for different sub-services
+- Use `DELETE /api/services/:hostname` to deregister explicitly
+
+### Overlay Network
+
+All services communicate over Swarm's encrypted overlay network. Agents don't need to publish ports to the host — the orchestrator routes to them by Swarm DNS name (`tasks.<stack>_<service>:<port>`). This eliminates port conflicts and simplifies networking.
+
+The orchestrator itself is the only service that publishes a host port (`:8080` for the tunnel).
+
+### Health Check Requirements
+
+The orchestrator polls your agent's health endpoint to determine readiness. Your container **must** expose an HTTP endpoint that:
+
+- Returns **2xx** when the agent is healthy and ready to serve traffic
+- Returns **non-2xx** (or connection refused/timeout) when unhealthy
+- Is accessible on the overlay network (not bound to localhost only)
+
+For on-demand agents, the health endpoint is critical — it's how the orchestrator knows when a cold-started agent is ready to receive proxied requests.
+
+Configure in `orchestrator.yaml`:
+
+```yaml
+health:
+  url: "http://tasks.warren_my-agent:8081/api/health"
+  check_interval: 30s
+  startup_timeout: 60s
+  max_failures: 3
+```
+
+Additionally, define a `HEALTHCHECK` in your Dockerfile for Swarm's own monitoring:
+
+```dockerfile
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8081/api/health || exit 1
+```
+
+Both checks serve different purposes: the Dockerfile `HEALTHCHECK` drives Swarm's restart policy, while the orchestrator's health polling drives routing decisions and event emission.
+
 ## Checklist
 
 Before deploying an agent container:

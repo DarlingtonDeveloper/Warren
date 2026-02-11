@@ -8,6 +8,22 @@ Running multiple OpenClaw agents on one server is a pain. You're manually managi
 
 Warren fixes this with a single Go binary and two YAML files.
 
+## Features
+
+- **Hostname routing** — route `*.yourdomain.com` to the right container by `Host` header
+- **Lifecycle policies** — `unmanaged`, `always-on`, `on-demand` (sleep at 0 replicas, wake on first request)
+- **Service registration API** — agents register dynamic hostnames at runtime (`POST /api/services`)
+- **Admin API** — separate port with agent listing, manual wake/sleep, health, and metrics
+- **WebSocket support** — frame-level activity tracking, connection-aware idle detection
+- **Event system** — structured events for all state transitions (`agent.ready`, `agent.sleep`, etc.)
+- **Prometheus metrics** — `/metrics` endpoint on the admin port
+- **Webhook alerting** — Slack-compatible webhook notifications on agent events
+- **LRU eviction** — automatically sleep least-recently-used on-demand agents when `max_ready_agents` is exceeded
+- **Config hot-reload** — send `SIGHUP` to reload YAML without restart
+- **Graceful shutdown** — WebSocket drain with configurable timeout on `SIGTERM`
+- **Swarm event watching** — real-time Docker event subscription for container state changes
+- **Systemd deployment** — run the orchestrator as a system service
+
 ## What It Does
 
 ### Hostname Routing
@@ -45,7 +61,7 @@ stateDiagram-v2
 
 ### Agent-Created Services
 
-OpenClaw agents can spin up services inside their container — web servers, preview apps, dev tools. These register with the orchestrator and get their own hostnames:
+OpenClaw agents can spin up services inside their container — web servers, preview apps, dev tools. These register with the orchestrator via the service registration API and get their own hostnames:
 
 ```mermaid
 sequenceDiagram
@@ -64,9 +80,51 @@ sequenceDiagram
 
 When the container sleeps, service routes are cleaned up automatically.
 
+### Admin API & Observability
+
+The admin API runs on a separate port and provides:
+
+```mermaid
+flowchart LR
+    subgraph Admin[":9090 Admin Port"]
+        A1["GET /admin/agents"]
+        A2["GET /admin/agents/:name"]
+        A3["POST /admin/agents/:name/wake"]
+        A4["POST /admin/agents/:name/sleep"]
+        A5["GET /admin/services"]
+        A6["GET /admin/health"]
+        A7["GET /metrics"]
+    end
+    
+    PROM["Prometheus"] -->|scrape| A7
+    SLACK["Slack"] <--|webhook| ORC["Event System"]
+```
+
+- **Agent listing** with real-time state
+- **Manual wake/sleep** for on-demand agents
+- **Service registry** inspection
+- **Health** with uptime and WebSocket connection count
+- **Prometheus metrics** — counters, gauges, histograms for all agent operations
+- **Webhook alerting** — push events to Slack-compatible endpoints
+
 ### WebSocket Support
 
-OpenClaw communicates over WebSocket. The proxy handles `Connection: Upgrade` correctly, tracks active WebSocket connections per agent, and never considers an agent idle while it has open connections.
+OpenClaw communicates over WebSocket. The proxy handles `Connection: Upgrade` correctly, tracks active WebSocket connections per agent with frame-level activity updates, and never considers an agent idle while it has open connections.
+
+### Event System
+
+All state transitions emit structured events consumed by metrics, webhooks, and the LRU eviction system:
+
+| Event | Description |
+|---|---|
+| `agent.ready` | Agent passed health checks and is serving traffic |
+| `agent.starting` | Agent is booting (scaled 0→1) |
+| `agent.sleep` | Agent went to sleep (scaled 1→0) |
+| `agent.wake` | Wake signal received |
+| `agent.degraded` | Health checks failing |
+| `agent.health_failed` | Individual health check failure |
+| `restart.exhausted` | Max restart attempts reached |
+| `docker.*` | Raw Docker Swarm events |
 
 ## Architecture
 
@@ -77,7 +135,8 @@ flowchart TB
     end
 
     subgraph Host
-        ORC["Go Orchestrator<br/>(hostname routing, wake/sleep, activity tracking)"]
+        ORC["Go Orchestrator<br/>(routing, wake/sleep, events, metrics)"]
+        ADM["Admin API :9090<br/>(/admin/*, /metrics)"]
         
         subgraph Docker Swarm
             S1["Agent A<br/>replicas: 1<br/>always-on"]
@@ -95,11 +154,12 @@ flowchart TB
     ORC -->|"Swarm Service API<br/>scale 0↔1"| S1
     ORC --> S2
     ORC --> S3
+    ORC -.-> ADM
 ```
 
 **Responsibility split:**
 
-- **Orchestrator** handles intelligence — hostname routing, wake-on-request, idle detection, WebSocket-aware activity tracking, connection holding during cold starts.
+- **Orchestrator** handles intelligence — hostname routing, wake-on-request, idle detection, WebSocket-aware activity tracking, connection holding during cold starts, event emission, metrics, alerting.
 - **Swarm** handles infrastructure — container images, health checks, restart policies, secrets, resource limits, overlay networking, rolling updates.
 
 ## Quick Start
@@ -118,18 +178,23 @@ make build
 
 ### 2. Configure
 
-Create `orchestrator.yaml`:
+Create `orchestrator.yaml` (see [configs/orchestrator.example.yaml](configs/orchestrator.example.yaml) for all options):
 
 ```yaml
 listen: ":8080"
+admin_listen: ":9090"
+max_ready_agents: 5
 
 defaults:
   health_check_interval: 30s
 
+webhooks:
+  - url: "https://your-slack-webhook-url"
+    events: ["agent.degraded", "restart.exhausted"]
+
 agents:
   my-agent:
     hostname: "agent.yourdomain.com"
-    # Use Swarm DNS for overlay network routing (no published ports needed).
     backend: "http://tasks.openclaw_my-agent:18790"
     policy: always-on
     container:
@@ -142,6 +207,8 @@ agents:
 
   my-on-demand-agent:
     hostname: "dev.yourdomain.com"
+    hostnames:
+      - "preview.yourdomain.com"
     backend: "http://tasks.openclaw_my-dev-agent:8081"
     policy: on-demand
     container:
@@ -153,6 +220,7 @@ agents:
       max_restart_attempts: 5
     idle:
       timeout: 30m
+      drain_timeout: 30s
 ```
 
 ### 3. Deploy Agents to Swarm
@@ -173,6 +241,13 @@ See [Containerising Agents](docs/containerising-agents.md) for how to package Op
 ./bin/orchestrator --config orchestrator.yaml
 ```
 
+Or with systemd:
+
+```bash
+sudo cp deploy/warren-orchestrator.service /etc/systemd/system/
+sudo systemctl enable --now warren-orchestrator
+```
+
 ### 5. Point Your Tunnel
 
 ```yaml
@@ -185,30 +260,68 @@ ingress:
 
 One rule. Never needs changing again.
 
+### 6. Config Hot-Reload
+
+```bash
+# Reload config without downtime
+sudo systemctl reload warren-orchestrator
+# or
+kill -SIGHUP $(pidof orchestrator)
+```
+
+Runtime-safe changes (idle timeouts, health intervals, failure thresholds) apply immediately. Structural changes (new agents, hostname changes) require a restart.
+
 ## Configuration Reference
 
 ### Top Level
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `listen` | string | `:8080` | Address to listen on |
+| `listen` | string | `:8080` | Address for the main proxy |
+| `admin_listen` | string | *(disabled)* | Address for the admin API and metrics (e.g. `:9090`) |
+| `max_ready_agents` | int | `0` (unlimited) | Max on-demand agents awake at once; triggers LRU eviction |
 | `defaults.health_check_interval` | duration | `30s` | Default health check interval for all agents |
+| `webhooks` | list | `[]` | Webhook endpoints for event alerting |
+| `webhooks[].url` | string | — | Webhook URL (Slack-compatible JSON payload) |
+| `webhooks[].headers` | map | — | Extra HTTP headers to include |
+| `webhooks[].events` | list | all | Event types to send (e.g. `["agent.degraded"]`) |
 
 ### Agent
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `hostname` | string | yes | Hostname to route to this agent |
-| `backend` | string | yes | URL of the agent's HTTP endpoint. In Swarm mode, use Swarm DNS: `http://tasks.<stack>_<service>:<port>` |
+| `hostname` | string | yes | Primary hostname to route to this agent |
+| `hostnames` | list | no | Additional hostnames for this agent |
+| `backend` | string | yes | URL of the agent's HTTP endpoint. In Swarm, use `http://tasks.<stack>_<service>:<port>` |
 | `policy` | string | yes | `unmanaged`, `always-on`, or `on-demand` |
-| `container.name` | string | for managed policies | Docker container or Swarm service name |
-| `idle.drain_timeout` | duration | `30s` | Max time to wait for WebSocket drain on shutdown |
-| `health.url` | string | for managed policies | Health check URL |
+| `container.name` | string | for managed | Docker Swarm service name |
+| `container.labels` | map | no | Labels for container discovery |
+| `health.url` | string | for managed | Health check URL |
 | `health.check_interval` | duration | from defaults | How often to poll health |
 | `health.startup_timeout` | duration | `60s` | Max time to wait for healthy on startup |
 | `health.max_failures` | int | `3` | Consecutive failures before restart |
 | `health.max_restart_attempts` | int | `10` | Max restarts before marking degraded |
 | `idle.timeout` | duration | `30m` | Idle time before sleeping (on-demand only) |
+| `idle.drain_timeout` | duration | `30s` | Max time to wait for WebSocket drain on sleep/shutdown |
+
+## Service Registration API
+
+Agents can register dynamic hostnames at runtime:
+
+```bash
+# Register a service
+curl -X POST http://orchestrator:8080/api/services \
+  -H 'Content-Type: application/json' \
+  -d '{"hostname": "preview.yourdomain.com", "target": ":3000"}'
+
+# List registered services
+curl http://orchestrator:8080/api/services
+
+# Deregister
+curl -X DELETE http://orchestrator:8080/api/services/preview.yourdomain.com
+```
+
+Dynamic routes are tied to the parent agent and automatically purged when the agent sleeps.
 
 ## Project Structure
 
@@ -216,28 +329,46 @@ One rule. Never needs changing again.
 warren/
 ├── cmd/orchestrator/          # entry point
 ├── internal/
-│   ├── config/                # YAML config + validation
+│   ├── admin/                 # admin API (agent listing, wake/sleep, health)
+│   ├── alerts/                # webhook alerting (Slack-compatible)
+│   ├── config/                # YAML config, validation, hot-reload
+│   ├── container/             # Docker Swarm service management, discovery, watcher
+│   ├── events/                # event emission system
+│   ├── metrics/               # Prometheus metrics
+│   ├── policy/                # lifecycle policies (always-on, on-demand, unmanaged, LRU)
 │   ├── proxy/                 # reverse proxy, WebSocket, activity tracking
-│   ├── policy/                # lifecycle policies (always-on, on-demand, unmanaged)
-│   └── container/             # Docker container + Swarm service management
-├── examples/
-│   ├── simple-agent/          # minimal single-agent Dockerfile
-│   └── multi-agent/           # supervisord pattern for multi-process containers
-├── deploy/
-│   ├── stack.yaml             # example Swarm stack
+│   └── services/              # dynamic service registry
+├── configs/
 │   └── orchestrator.example.yaml
+├── deploy/
+│   └── stack.yaml             # example Swarm stack
+├── docker/
+│   └── dutybound/             # example agent container
 ├── docs/
 │   ├── architecture.md        # detailed architecture + design decisions
-│   ├── containerising-agents.md  # how to package OpenClaw agents
-│   └── spec-delta.md          # spec vs implementation gap analysis
+│   └── containerising-agents.md  # how to package OpenClaw agents
 └── Makefile
 ```
 
+## Testing
+
+```bash
+# Run all tests with race detection
+make test
+
+# Lint
+make lint
+
+# Full CI pipeline (build + test + lint)
+make ci
+```
+
+The test suite covers all packages with unit tests and integration tests for the proxy layer.
+
 ## Docs
 
-- [Architecture](docs/architecture.md) — detailed design, responsibility split, scaling path
+- [Architecture](docs/architecture.md) — detailed design, event system, metrics pipeline, LRU eviction
 - [Containerising Agents](docs/containerising-agents.md) — how to package OpenClaw agents as Docker images
-- [Spec Delta & TODO](docs/spec-delta.md) — gap analysis and roadmap
 
 ## License
 
