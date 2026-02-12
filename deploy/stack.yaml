@@ -133,7 +133,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 1G
+          memory: 2G
     environment:
       - OPENCLAW_GATEWAY_TOKEN=***REMOVED***
       - OPENCLAW_MODEL=anthropic/claude-sonnet-4-20250514
