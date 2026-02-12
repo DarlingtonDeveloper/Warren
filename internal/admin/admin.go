@@ -874,5 +874,5 @@ func calculateSSHFingerprint(keyLine string) (string, error) {
 	}
 
 	hash := sha256.Sum256(keyData)
-	return "SHA256:" + base64.StdEncoding.EncodeToString(hash[:]), nil
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(hash[:]), nil
 }
