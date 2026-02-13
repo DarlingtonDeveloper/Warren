@@ -66,7 +66,7 @@ jobs:
       - name: Wait for health
         run: |
           for i in $(seq 1 30); do
-            curl -sf http://localhost:9090/admin/health && exit 0 || sleep 1
+            curl -sf -H "Authorization: Bearer e2e-test-token" http://localhost:9090/admin/health && exit 0 || sleep 1
           done
           exit 1
       - name: Run E2E tests
