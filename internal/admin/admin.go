@@ -538,7 +538,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutCtx)
+		_ = srv.Shutdown(shutCtx)
 	}()
 
 	s.logger.Info("admin server starting", "addr", addr)
