@@ -1,6 +1,7 @@
 package hermes
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -63,7 +64,7 @@ var KVBucketConfigs = []jetstream.KeyValueConfig{
 // ProvisionStreams creates or updates all JetStream streams.
 func ProvisionStreams(js jetstream.JetStream) error {
 	for _, cfg := range StreamConfigs {
-		if _, err := js.CreateOrUpdateStream(nil, cfg); err != nil {
+		if _, err := js.CreateOrUpdateStream(context.TODO(), cfg); err != nil {
 			return fmt.Errorf("provision stream %s: %w", cfg.Name, err)
 		}
 	}
@@ -73,7 +74,7 @@ func ProvisionStreams(js jetstream.JetStream) error {
 // ProvisionKVBuckets creates all KeyValue buckets if they don't already exist.
 func ProvisionKVBuckets(js jetstream.JetStream) error {
 	for _, cfg := range KVBucketConfigs {
-		if _, err := js.CreateOrUpdateKeyValue(nil, cfg); err != nil {
+		if _, err := js.CreateOrUpdateKeyValue(context.TODO(), cfg); err != nil {
 			return fmt.Errorf("provision KV bucket %s: %w", cfg.Bucket, err)
 		}
 	}
